@@ -11,6 +11,19 @@ const fs = require("fs").promises;
 const os = require("os");
 const path = require("path");
 const childProcess = require('child_process');
+
+// Load .env from the app directory rather than the CWD, which varies under
+// IIS/nodemon/service managers. Real environment variables take precedence,
+// so Heroku config vars and web.config settings still win over the file.
+try
+{
+	process.loadEnvFile(path.join(__dirname, '.env'));
+}
+catch (e)
+{
+	if (e.code !== 'ENOENT') throw e;
+}
+
 let cluster = false;
 
 const NO_CLUSTER = process.env.NO_CLUSTER === '1';
@@ -141,7 +154,11 @@ else
 			dataLen = key.length + data.length + 2; //we add 2 zeros with compressed data
 		}
 		
-		var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 4); //4 is the header size "zTXt", "tEXt" or "pHYs"
+		// A PNG chunk costs dataLen + 12 bytes on the wire: 4 length + 4 type + dataLen + 4 CRC.
+		// This previously allocated dataLen + 4, which is 8 bytes short, so the tail of the copied
+		// original -- the IEND chunk -- was silently truncated and every embedXml PNG was malformed.
+		// draw.io's own reader is lenient enough not to notice; stricter decoders reject the file.
+		var outBuff = Buffer.allocUnsafe(origBuff.length + dataLen + 12);
 		
 		try
 		{
@@ -221,9 +238,15 @@ else
 						outOffset += data.length;				
 					}
 
+					// The CRC covers the chunk TYPE plus the WHOLE chunk data. For zTXt/tEXt the
+					// data is `key \0 [compressionMethod] payload`, so hashing `data` alone omitted
+					// the key, its null terminator and the method byte -- key.length + 1 or 2 bytes
+					// -- and produced a CRC that no strict PNG decoder accepts. Hash exactly the
+					// bytes just written instead, which is right for pHYs, tEXt and zTXt alike.
+					var chunkStart = outOffset - dataLen;
 					var crcVal = 0xffffffff;
 					crcVal = crc.crcjam(typeSignature, crcVal);
-					crcVal = crc.crcjam(data, crcVal);
+					crcVal = crc.crcjam(outBuff.slice(chunkStart, outOffset), crcVal);
 
 					// CRC
 					outBuff.writeInt32BE(crcVal ^ 0xffffffff, outOffset);
@@ -473,7 +496,7 @@ else
 						browser = await puppeteer.launch({
 							headless: 'chrome-headless-shell',
 							args: minimal_args,
-							userDataDir: './puppeteer_user_data' + cluster.worker.id
+							userDataDir: './puppeteer_user_data' + (cluster.worker ? cluster.worker.id : 0)
 						});
 
 						// Workaround for timeouts/zombies is to kill after 30 secs

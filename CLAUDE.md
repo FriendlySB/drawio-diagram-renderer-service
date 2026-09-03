@@ -79,6 +79,8 @@ The server listens on `PORT` env var (default: `8000`).
 
 ## Environment variables
 
+Loaded from a gitignored `.env` next to `export.js` via Node's built-in `process.loadEnvFile()` (no dotenv dependency). The path is resolved against `__dirname`, not the CWD, so it works under IIS/nodemon/service managers. Real environment variables take precedence over `.env` entries. See `.env.example`.
+
 | Variable | Purpose | Default |
 |----------|---------|---------|
 | `PORT` | HTTP listen port | `8000` |
